@@ -1119,10 +1119,18 @@ func GeminiChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *
 		str := responseText.String()
 		if len(str) > 0 {
 			usage = service.ResponseText2Usage(responseText.String(), info.UpstreamModelName, info.PromptTokens)
-		} else {
-			// 空补全，不需要使用量
-			usage = &dto.Usage{}
 		}
+	}
+
+	// 检查是否为空补全
+	if usage.CompletionTokens == 0 && usage.TotalTokens == 0 {
+		logger.LogWarn(c, "Gemini stream response has zero completion tokens")
+		return nil, types.NewErrorWithStatusCode(
+			errors.New("zero completion tokens from Gemini API"),
+			types.ErrorCodeEmptyResponse,
+			http.StatusBadRequest,
+			types.ErrOptionWithSkipRetry(),
+		)
 	}
 
 	response := helper.GenerateFinalUsageResponse(id, createAt, info.UpstreamModelName, *usage)
@@ -1189,6 +1197,17 @@ func GeminiChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 		} else if detail.Modality == "TEXT" {
 			usage.PromptTokensDetails.TextTokens = detail.TokenCount
 		}
+	}
+
+	// 检查是否为空补全
+	if usage.CompletionTokens == 0 && usage.TotalTokens == 0 {
+		logger.LogWarn(c, "Gemini response has zero completion tokens")
+		return nil, types.NewErrorWithStatusCode(
+			errors.New("zero completion tokens from Gemini API"),
+			types.ErrorCodeEmptyResponse,
+			http.StatusBadRequest,
+			types.ErrOptionWithSkipRetry(),
+		)
 	}
 
 	fullTextResponse.Usage = usage

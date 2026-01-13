@@ -83,6 +83,17 @@ func GeminiTextGenerationHandler(c *gin.Context, info *relaycommon.RelayInfo, re
 		}
 	}
 
+	// 检查是否为空补全
+	if usage.CompletionTokens == 0 && usage.TotalTokens == 0 {
+		logger.LogWarn(c, "Gemini native response has zero completion tokens")
+		return nil, types.NewErrorWithStatusCode(
+			errors.New("zero completion tokens from Gemini API"),
+			types.ErrorCodeEmptyResponse,
+			http.StatusBadRequest,
+			types.ErrOptionWithSkipRetry(),
+		)
+	}
+
 	service.IOCopyBytesGracefully(c, resp, responseBody)
 
 	return &usage, nil
@@ -252,10 +263,18 @@ func GeminiTextGenerationStreamHandler(c *gin.Context, info *relaycommon.RelayIn
 		str := responseText.String()
 		if len(str) > 0 {
 			usage = service.ResponseText2Usage(responseText.String(), info.UpstreamModelName, info.PromptTokens)
-		} else {
-			// 空补全，不需要使用量
-			usage = &dto.Usage{}
 		}
+	}
+
+	// 检查是否为空补全
+	if usage.CompletionTokens == 0 && usage.TotalTokens == 0 {
+		logger.LogWarn(c, "Gemini native stream response has zero completion tokens")
+		return nil, types.NewErrorWithStatusCode(
+			errors.New("zero completion tokens from Gemini API"),
+			types.ErrorCodeEmptyResponse,
+			http.StatusBadRequest,
+			types.ErrOptionWithSkipRetry(),
+		)
 	}
 
 	// 移除流式响应结尾的[Done]，因为Gemini API没有发送Done的行为
