@@ -69,6 +69,7 @@ const (
 	ErrorCodeEmptyResponse          ErrorCode = "empty_response"
 	ErrorCodeAwsInvokeError         ErrorCode = "aws_invoke_error"
 	ErrorCodeModelNotFound          ErrorCode = "model_not_found"
+	ErrorCodeContentFiltered        ErrorCode = "content_filter"
 
 	// sql error
 	ErrorCodeQueryDataError  ErrorCode = "query_data_error"

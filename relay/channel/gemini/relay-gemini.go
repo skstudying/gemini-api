@@ -910,6 +910,55 @@ func handleFinalStream(c *gin.Context, info *relaycommon.RelayInfo, resp *dto.Ch
 	return nil
 }
 
+// processPendingResponse 处理暂存的 Gemini 响应并发送
+func processPendingResponse(c *gin.Context, info *relaycommon.RelayInfo, geminiResponse *dto.GeminiChatResponse,
+	id string, createAt int64, finishReason *string, imageCount *int, responseText *strings.Builder) {
+
+	for _, candidate := range geminiResponse.Candidates {
+		for _, part := range candidate.Content.Parts {
+			if part.InlineData != nil && part.InlineData.MimeType != "" {
+				*imageCount++
+			}
+			if part.Text != "" {
+				responseText.WriteString(part.Text)
+			}
+		}
+	}
+
+	response, isStop := streamResponseGeminiChat2OpenAI(geminiResponse)
+	response.Id = id
+	response.Created = createAt
+	response.Model = info.UpstreamModelName
+
+	if info.SendResponseCount == 0 {
+		emptyResponse := helper.GenerateStartEmptyResponse(id, createAt, info.UpstreamModelName, nil)
+		if response.IsToolCall() {
+			if len(emptyResponse.Choices) > 0 && len(response.Choices) > 0 {
+				toolCalls := response.Choices[0].Delta.ToolCalls
+				copiedToolCalls := make([]dto.ToolCallResponse, len(toolCalls))
+				for idx := range toolCalls {
+					copiedToolCalls[idx] = toolCalls[idx]
+					copiedToolCalls[idx].Function.Arguments = ""
+				}
+				emptyResponse.Choices[0].Delta.ToolCalls = copiedToolCalls
+			}
+			*finishReason = constant.FinishReasonToolCalls
+			_ = handleStream(c, info, emptyResponse)
+			response.ClearToolCalls()
+			if response.IsFinished() {
+				response.Choices[0].FinishReason = nil
+			}
+		} else {
+			_ = handleStream(c, info, emptyResponse)
+		}
+	}
+
+	_ = handleStream(c, info, response)
+	if isStop {
+		_ = handleStream(c, info, helper.GenerateStopResponse(id, createAt, info.UpstreamModelName, *finishReason))
+	}
+}
+
 func GeminiChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
 	// responseText := ""
 	id := helper.GetResponseID(c)
@@ -919,12 +968,50 @@ func GeminiChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *
 	var imageCount int
 	finishReason := constant.FinishReasonStop
 
+	// 用于延迟发送的状态（检测内容拦截）
+	var pendingGeminiResponse *dto.GeminiChatResponse // 暂存的第一个消息块
+	var isPendingEmptyThought bool                    // 第一个消息块是否是空思考
+	var contentBlocked bool                           // 是否被内容拦截
+	var blockReason string                            // 拦截原因
+
 	helper.StreamScannerHandler(c, resp, info, func(data string) bool {
 		var geminiResponse dto.GeminiChatResponse
 		err := common.UnmarshalJsonStr(data, &geminiResponse)
 		if err != nil {
 			logger.LogError(c, "error unmarshalling stream response: "+err.Error())
 			return false
+		}
+
+		// 检查是否被内容审核拦截
+		if geminiResponse.PromptFeedback.IsBlocked() {
+			// 如果之前有暂存的空思考消息，说明这是拦截场景
+			if isPendingEmptyThought {
+				contentBlocked = true
+				blockReason = geminiResponse.PromptFeedback.BlockReason
+				logger.LogWarn(c, "Gemini content blocked (detected empty thought pattern): "+blockReason)
+				return false // 停止处理，不发送任何数据
+			}
+			// 如果没有暂存的消息，说明流已经开始了，只记录日志
+			logger.LogWarn(c, "Gemini content blocked (stream already started): "+geminiResponse.PromptFeedback.BlockReason)
+		}
+
+		// 第一个消息块的特殊处理
+		if info.SendResponseCount == 0 && pendingGeminiResponse == nil {
+			// 检查是否是"空思考"模式
+			if dto.IsEmptyThoughtResponse(&geminiResponse) {
+				// 暂存第一个消息块，等待第二个消息块确认
+				pendingGeminiResponse = &geminiResponse
+				isPendingEmptyThought = true
+				logger.LogDebug(c, "Detected potential empty thought pattern, pending first chunk")
+				return true // 继续接收下一个消息块
+			}
+		}
+
+		// 如果有暂存的消息，先处理暂存的
+		if pendingGeminiResponse != nil {
+			processPendingResponse(c, info, pendingGeminiResponse, id, createAt, &finishReason, &imageCount, &responseText)
+			pendingGeminiResponse = nil
+			isPendingEmptyThought = false
 		}
 
 		for _, candidate := range geminiResponse.Candidates {
@@ -998,6 +1085,21 @@ func GeminiChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *
 		return true
 	})
 
+	// 如果内容被拦截（在发送任何数据之前），返回 400 错误
+	if contentBlocked {
+		return nil, types.NewErrorWithStatusCode(
+			errors.New("content blocked by Gemini safety filter: "+blockReason),
+			types.ErrorCodeContentFiltered,
+			http.StatusBadRequest,
+			types.ErrOptionWithSkipRetry(),
+		)
+	}
+
+	// 如果还有暂存的消息没发送（流意外结束），发送它
+	if pendingGeminiResponse != nil {
+		processPendingResponse(c, info, pendingGeminiResponse, id, createAt, &finishReason, &imageCount, &responseText)
+	}
+
 	if info.SendResponseCount == 0 {
 		// 空补全，报错不计费
 		// empty response, throw an error
@@ -1049,8 +1151,26 @@ func GeminiChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
+
+	// 检查是否被内容审核拦截
+	if geminiResponse.PromptFeedback.IsBlocked() {
+		logger.LogWarn(c, "Gemini content blocked: "+geminiResponse.PromptFeedback.BlockReason)
+		return nil, types.NewErrorWithStatusCode(
+			errors.New("content blocked by Gemini safety filter: "+geminiResponse.PromptFeedback.BlockReason),
+			types.ErrorCodeContentFiltered,
+			http.StatusBadRequest,
+			types.ErrOptionWithSkipRetry(),
+		)
+	}
+
 	if len(geminiResponse.Candidates) == 0 {
-		return nil, types.NewOpenAIError(errors.New("no candidates returned"), types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+		logger.LogWarn(c, "Gemini response has no candidates, treating as empty response")
+		return nil, types.NewErrorWithStatusCode(
+			errors.New("no response from Gemini API"),
+			types.ErrorCodeEmptyResponse,
+			http.StatusBadRequest,
+			types.ErrOptionWithSkipRetry(),
+		)
 	}
 	fullTextResponse := responseGeminiChat2OpenAI(c, &geminiResponse)
 	fullTextResponse.Model = info.UpstreamModelName

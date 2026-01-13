@@ -292,7 +292,27 @@ type GeminiChatSafetyRating struct {
 }
 
 type GeminiChatPromptFeedback struct {
+	BlockReason   string                   `json:"blockReason,omitempty"`
 	SafetyRatings []GeminiChatSafetyRating `json:"safetyRatings"`
+}
+
+// IsBlocked 检查请求是否被内容审核拦截
+func (f *GeminiChatPromptFeedback) IsBlocked() bool {
+	return f.BlockReason != ""
+}
+
+// IsEmptyThought 检查响应是否是空的思考内容（可能是拦截前的占位响应）
+// 特征：只有一个 candidate，只有一个 part，thought=true，text 为空或只有空格
+func IsEmptyThoughtResponse(resp *GeminiChatResponse) bool {
+	if len(resp.Candidates) != 1 {
+		return false
+	}
+	candidate := resp.Candidates[0]
+	if len(candidate.Content.Parts) != 1 {
+		return false
+	}
+	part := candidate.Content.Parts[0]
+	return part.Thought && strings.TrimSpace(part.Text) == ""
 }
 
 type GeminiChatResponse struct {

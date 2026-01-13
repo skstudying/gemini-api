@@ -90,6 +90,17 @@ func ShouldDisableChannel(channelType int, err *types.NewAPIError) bool {
 		return true
 	}
 
+	// Gemini渠道特殊处理：精确匹配永久配额耗尽错误
+	// 只有完全匹配时才自动禁用，避免误伤临时限流错误
+	if channelType == constant.ChannelTypeGemini {
+		errMsg := strings.TrimSpace(err.Error())
+		// 报错1：永久配额耗尽（完全匹配，应该禁用）
+		if errMsg == "You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits." {
+			return true
+		}
+		// 报错2：临时超限（含有额外信息如"* Quota exceeded for metric"，不会匹配上面的条件，继续走通用逻辑）
+	}
+
 	lowerMessage := strings.ToLower(err.Error())
 	search, _ := AcSearch(lowerMessage, operation_setting.AutomaticDisableKeywords, true)
 	return search
