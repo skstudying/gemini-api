@@ -1123,7 +1123,7 @@ func GeminiChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *
 	}
 
 	// 检查是否为空补全
-	if usage.CompletionTokens == 0 && usage.TotalTokens == 0 {
+	if usage.CompletionTokens == 0 {
 		logger.LogWarn(c, "Gemini stream response has zero completion tokens")
 		return nil, types.NewErrorWithStatusCode(
 			errors.New("zero completion tokens from Gemini API"),
@@ -1200,7 +1200,7 @@ func GeminiChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 	}
 
 	// 检查是否为空补全
-	if usage.CompletionTokens == 0 && usage.TotalTokens == 0 {
+	if usage.CompletionTokens == 0 {
 		logger.LogWarn(c, "Gemini response has zero completion tokens")
 		return nil, types.NewErrorWithStatusCode(
 			errors.New("zero completion tokens from Gemini API"),

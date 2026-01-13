@@ -84,7 +84,7 @@ func GeminiTextGenerationHandler(c *gin.Context, info *relaycommon.RelayInfo, re
 	}
 
 	// 检查是否为空补全
-	if usage.CompletionTokens == 0 && usage.TotalTokens == 0 {
+	if usage.CompletionTokens == 0 {
 		logger.LogWarn(c, "Gemini native response has zero completion tokens")
 		return nil, types.NewErrorWithStatusCode(
 			errors.New("zero completion tokens from Gemini API"),
@@ -267,7 +267,7 @@ func GeminiTextGenerationStreamHandler(c *gin.Context, info *relaycommon.RelayIn
 	}
 
 	// 检查是否为空补全
-	if usage.CompletionTokens == 0 && usage.TotalTokens == 0 {
+	if usage.CompletionTokens == 0 {
 		logger.LogWarn(c, "Gemini native stream response has zero completion tokens")
 		return nil, types.NewErrorWithStatusCode(
 			errors.New("zero completion tokens from Gemini API"),
